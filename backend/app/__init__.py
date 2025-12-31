@@ -1,0 +1,2 @@
+# Legal Contract Parser Application
+
