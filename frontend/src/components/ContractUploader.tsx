@@ -6,8 +6,6 @@ interface Clause {
   number: string;
   title: string;
   content: string;
-  type: string;
-  confidence: number;
   level?: number;
   children?: Clause[];
 }
@@ -20,7 +18,6 @@ interface ParseResponse {
     filename?: string;
   };
   total_pages: number;
-  confidence_score: number;
   processing_time: number;
 }
 
@@ -143,7 +140,7 @@ const ContractUploader: React.FC = () => {
       {result && (
         <div className="bg-white rounded-lg shadow-md p-6 mb-8">
           <h2 className="text-xl font-semibold mb-4">Processing Results</h2>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <div className="text-sm text-gray-600">Total Pages</div>
               <div className="text-2xl font-bold text-gray-900">
@@ -154,12 +151,6 @@ const ContractUploader: React.FC = () => {
               <div className="text-sm text-gray-600">Clauses Found</div>
               <div className="text-2xl font-bold text-gray-900">
                 {result.clauses.length}
-              </div>
-            </div>
-            <div>
-              <div className="text-sm text-gray-600">Confidence Score</div>
-              <div className="text-2xl font-bold text-gray-900">
-                {(result.confidence_score * 100).toFixed(1)}%
               </div>
             </div>
             <div>

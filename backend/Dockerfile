@@ -17,7 +17,12 @@ WORKDIR /app
 
 # Copy requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Fix setuptools version to avoid jinja2 build issues
+RUN pip install --no-cache-dir "setuptools<70.0.0" && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip cache purge && \
+    rm -rf /root/.cache/pip
 
 # Create directories for models and uploads
 RUN mkdir -p /app/models /app/uploads

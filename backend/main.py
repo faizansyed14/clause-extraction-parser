@@ -44,7 +44,6 @@ class ParseResponse(BaseModel):
     clauses: list
     metadata: dict
     total_pages: int
-    confidence_score: float
     processing_time: float
 
 
@@ -79,12 +78,12 @@ async def parse_contract(file: UploadFile = File(...)):
                 "number": "1.1",
                 "title": "Definitions",
                 "content": "...",
-                "type": "definitions",
-                "confidence": 0.95,
+                "level": 2,
                 "children": [...]
             }
         ],
         "metadata": {...},
+        "total_pages": 10,
         "processing_time": 12.3
     }
     """
@@ -142,7 +141,7 @@ async def health_check():
             "tesseract_ocr": processor.use_tesseract,
             "layout_model": processor.layout_model is not None,
             "docformer": processor.docformer_model is not None,
-            "legal_bert": processor.legal_bert is not None
+            "contracts_bert": processor.contracts_bert is not None
         }
     }
 

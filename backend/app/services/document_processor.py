@@ -82,28 +82,28 @@ class LegalDocumentProcessor:
             self.docformer_model = None
             self.docformer_processor = None
         
-        # Initialize Legal-BERT for clause extraction
+        # Initialize CONTRACTS-BERT for contract-specific clause classification and validation
         if self.use_ml_models:
-            print("Loading Legal-BERT (ML models enabled)...")
+            print("Loading CONTRACTS-BERT (ML models enabled)...")
             try:
-                self.legal_bert = AutoModel.from_pretrained(
-                    "nlpaueb/legal-bert-base-uncased"
+                self.contracts_bert = AutoModel.from_pretrained(
+                    "nlpaueb/bert-base-uncased-contracts"
                 )
-                self.legal_tokenizer = AutoTokenizer.from_pretrained(
-                    "nlpaueb/legal-bert-base-uncased"
+                self.contracts_tokenizer = AutoTokenizer.from_pretrained(
+                    "nlpaueb/bert-base-uncased-contracts"
                 )
-                print("✓ Legal-BERT loaded successfully")
+                print("✓ CONTRACTS-BERT loaded successfully")
                 # Pre-compute category embeddings for faster classification
                 self._initialize_category_embeddings()
             except Exception as e:
-                print(f"Warning: Could not load Legal-BERT: {e}")
-                self.legal_bert = None
-                self.legal_tokenizer = None
+                print(f"Warning: Could not load CONTRACTS-BERT: {e}")
+                self.contracts_bert = None
+                self.contracts_tokenizer = None
                 self.category_embeddings = None
         else:
-            print("Legal-BERT: DISABLED (use USE_ML_MODELS=true to enable)")
-            self.legal_bert = None
-            self.legal_tokenizer = None
+            print("CONTRACTS-BERT: DISABLED (use USE_ML_MODELS=true to enable)")
+            self.contracts_bert = None
+            self.contracts_tokenizer = None
             self.category_embeddings = None
         
         # Initialize clause classifier
@@ -632,12 +632,13 @@ class LegalDocumentProcessor:
         """
         Pre-compute embeddings for each CUAD category using their descriptions
         This speeds up classification by avoiding repeated embedding calculations
+        Uses CONTRACTS-BERT for contract-specific understanding
         """
-        if not self.legal_bert or not self.legal_tokenizer:
+        if not self.contracts_bert or not self.contracts_tokenizer:
             self.category_embeddings = None
             return
         
-        print("Pre-computing category embeddings for Legal-BERT classification...")
+        print("Pre-computing category embeddings for CONTRACTS-BERT classification...")
         self.category_embeddings = {}
         
         # Create descriptive text for each category
@@ -689,7 +690,7 @@ class LegalDocumentProcessor:
             with torch.no_grad():
                 for category, description in category_descriptions.items():
                     # Tokenize category description
-                    inputs = self.legal_tokenizer(
+                    inputs = self.contracts_tokenizer(
                         description,
                         return_tensors="pt",
                         truncation=True,
@@ -698,7 +699,7 @@ class LegalDocumentProcessor:
                     )
                     
                     # Get embedding
-                    outputs = self.legal_bert(**inputs)
+                    outputs = self.contracts_bert(**inputs)
                     cls_embedding = outputs.last_hidden_state[:, 0, :]
                     
                     # Normalize embedding for cosine similarity
@@ -710,13 +711,14 @@ class LegalDocumentProcessor:
             print(f"Warning: Could not pre-compute category embeddings: {e}")
             self.category_embeddings = None
     
-    def _classify_with_legal_bert(self, clause_text: str) -> Tuple[str, float]:
+    def _classify_with_contracts_bert(self, clause_text: str) -> Tuple[str, float]:
         """
-        Classify clause using Legal-BERT semantic similarity
+        Classify clause using CONTRACTS-BERT semantic similarity
         Uses pre-computed category embeddings for fast classification
+        CONTRACTS-BERT is specifically trained on US contracts for better accuracy
         Returns (category, confidence)
         """
-        if not self.legal_bert or not self.legal_tokenizer:
+        if not self.contracts_bert or not self.contracts_tokenizer:
             # Fallback to keyword-based
             category = self.clause_classifier.get_primary_category(clause_text)
             return (category, 0.75)
@@ -728,7 +730,7 @@ class LegalDocumentProcessor:
         
         try:
             # Tokenize the clause text
-            inputs = self.legal_tokenizer(
+            inputs = self.contracts_tokenizer(
                 clause_text[:2000],  # Truncate to ~2000 chars to stay within token limit
                 return_tensors="pt",
                 truncation=True,
@@ -738,7 +740,7 @@ class LegalDocumentProcessor:
             
             # Get clause embedding
             with torch.no_grad():
-                outputs = self.legal_bert(**inputs)
+                outputs = self.contracts_bert(**inputs)
                 # Use [CLS] token embedding for classification
                 clause_embedding = outputs.last_hidden_state[:, 0, :]
                 # Normalize for cosine similarity
@@ -769,9 +771,137 @@ class LegalDocumentProcessor:
             
             return (best_category, confidence)
         except Exception as e:
-            print(f"Error in Legal-BERT classification: {e}, falling back to keywords")
+            print(f"Error in CONTRACTS-BERT classification: {e}, falling back to keywords")
             category = self.clause_classifier.get_primary_category(clause_text)
             return (category, 0.75)
+    
+    def _validate_clause_with_contracts_bert(
+        self, 
+        clause: Dict, 
+        parent_clause: Optional[Dict] = None,
+        all_clauses: List[Dict] = None
+    ) -> Dict:
+        """
+        Validate clause extraction using CONTRACTS-BERT
+        Checks:
+        1. Completeness: Does the clause have complete content?
+        2. Hierarchy: Is the clause properly nested (e.g., 1.1 under 1, 1.1.1 under 1.1)?
+        3. Boundaries: Does the clause start and end correctly?
+        4. Content Quality: Does the clause make sense as a complete legal clause?
+        
+        Returns validation result with issues and confidence
+        """
+        if not self.contracts_bert or not self.contracts_tokenizer:
+            return {
+                'is_valid': True,
+                'confidence': 0.75,
+                'issues': [],
+                'warnings': []
+            }
+        
+        validation_issues = []
+        warnings = []
+        clause_text = clause.get('content', '')
+        clause_number = clause.get('number', '')
+        clause_level = clause.get('level', 1)
+        
+        # 1. Check completeness
+        if len(clause_text.strip()) < 10:
+            validation_issues.append("Clause content is too short (likely incomplete)")
+        elif not clause_text.strip().endswith(('.', '!', '?', ';')):
+            # Legal clauses typically end with punctuation
+            warnings.append("Clause may be incomplete (does not end with standard punctuation)")
+        
+        # 2. Check hierarchy using CONTRACTS-BERT semantic understanding
+        if parent_clause:
+            parent_number = parent_clause.get('number', '')
+            # Check if current clause number is a valid child of parent
+            # e.g., "1.1" should be under "1", "1.1.1" should be under "1.1"
+            if clause_level > 1:
+                # Extract parent prefix from clause number
+                # "1.1" -> parent should be "1"
+                # "1.1.1" -> parent should be "1.1"
+                parts = clause_number.split('.')
+                if len(parts) > 1:
+                    expected_parent = '.'.join(parts[:-1])
+                    if expected_parent != parent_number:
+                        validation_issues.append(
+                            f"Hierarchy mismatch: clause {clause_number} should be under {expected_parent}, but found under {parent_number}"
+                        )
+        
+        # 3. Check boundaries using CONTRACTS-BERT
+        # Validate that clause starts with proper numbering pattern
+        if clause_level == 1:
+            # Main clauses should start with their number
+            if not clause_text.strip().startswith(clause_number):
+                warnings.append(f"Clause {clause_number} does not start with its number")
+        
+        # 4. Content quality check using CONTRACTS-BERT embeddings
+        try:
+            # Tokenize clause text
+            inputs = self.contracts_tokenizer(
+                clause_text[:2000],
+                return_tensors="pt",
+                truncation=True,
+                max_length=512,
+                padding=True
+            )
+            
+            with torch.no_grad():
+                outputs = self.contracts_bert(**inputs)
+                clause_embedding = outputs.last_hidden_state[:, 0, :]
+                clause_embedding = clause_embedding / torch.norm(clause_embedding, dim=1, keepdim=True)
+                clause_embedding = clause_embedding.squeeze(0)
+            
+            # Check if clause has meaningful content (not just numbers or single words)
+            # Calculate embedding norm as a proxy for content richness
+            if torch.norm(clause_embedding).item() < 0.1:
+                validation_issues.append("Clause content appears to be too sparse or meaningless")
+            
+            # Check for common incomplete patterns
+            incomplete_patterns = [
+                r'^\d+\.?\s*$',  # Just a number
+                r'^\d+\.\d+\.?\s*$',  # Just a number like "1.1"
+                r'^[A-Z]\.?\s*$',  # Just a letter
+            ]
+            for pattern in incomplete_patterns:
+                if re.match(pattern, clause_text.strip()):
+                    validation_issues.append("Clause appears to contain only numbering without content")
+                    break
+            
+        except Exception as e:
+            warnings.append(f"Could not perform semantic validation: {e}")
+        
+        # 5. Check for missing sub-clauses (if we have all clauses)
+        if all_clauses and clause_level == 1:
+            # Check if there are expected sub-clauses that might be missing
+            # e.g., if we have "1" and "1.2", we might be missing "1.1"
+            clause_num_parts = clause_number.split('.')
+            if len(clause_num_parts) == 1:
+                # Main clause - check for gaps in sub-clauses
+                main_num = clause_num_parts[0]
+                sub_clauses = [
+                    c for c in all_clauses 
+                    if c.get('number', '').startswith(f"{main_num}.") and c.get('level', 0) == 2
+                ]
+                if sub_clauses:
+                    sub_nums = [int(c.get('number', '').split('.')[1]) for c in sub_clauses if '.' in c.get('number', '')]
+                    if sub_nums:
+                        expected_range = range(1, max(sub_nums) + 1)
+                        missing = [n for n in expected_range if n not in sub_nums]
+                        if missing:
+                            warnings.append(f"Possible missing sub-clauses: {[f'{main_num}.{n}' for n in missing]}")
+        
+        # Calculate validation confidence
+        is_valid = len(validation_issues) == 0
+        confidence = max(0.5, 1.0 - (len(validation_issues) * 0.2 + len(warnings) * 0.1))
+        
+        return {
+            'is_valid': is_valid,
+            'confidence': min(0.95, confidence),
+            'issues': validation_issues,
+            'warnings': warnings
+        }
     
     def _enhance_with_docformer(
         self, 
@@ -861,6 +991,7 @@ class LegalDocumentProcessor:
         clauses = []
         current_clause = None
         pending_numbering = None  # Store numbering when title comes in next block
+        found_first_clause = False  # Track if we've found the first real clause
         
         for idx, block in enumerate(doc_structure['all_blocks']):
             text = block['text'].strip()
@@ -873,14 +1004,107 @@ class LegalDocumentProcessor:
                 print(f"  -> Skipping table of contents entry: {text[:60]}")
                 continue
             
+            # Skip document headers/metadata in the first 20 blocks
+            # These are typically all caps, short, and don't have clause numbering
+            if idx < 20 and not found_first_clause:
+                # Skip common document header patterns
+                if (text.isupper() and len(text) < 100 and 
+                    not self._detect_clause_numbering(text) and
+                    not re.match(r'^\d+\.\s+', text)):  # Not a numbered clause
+                    # Check if it looks like a document header (not a clause)
+                    if any(keyword in text.upper() for keyword in ['AGREEMENT', 'CONFIDENTIAL', 'DOCUMENT', 'PARTIES', 'BACKGROUND', 'CONTENTS', 'CLAUSE']):
+                        if len(text.split()) <= 5:  # Short header-like text
+                            print(f"  -> Skipping document header: {text[:60]}")
+                            continue
+            
             # Check if this block starts a new clause
             numbering = self._detect_clause_numbering(text)
             
-            # Debug: log blocks that might contain numbering or first 20 blocks
-            if numbering or idx < 20:
+            # If no numbering at start, check if numbering appears in the block (for cases where numbering and content are merged)
+            if not numbering and len(text) > 10:
+                # Look for numbering patterns within the text (not just at start)
+                # This handles cases where "1. TITLE" might be merged with previous content
+                for pattern_info in [
+                    (r'\b(\d+)\.\s+([A-Z][^\.]{3,})', 'numeric_single'),  # "1. TITLE" in middle
+                    (r'\b(\d+)\.(\d+)\s+([A-Z][^\.]{3,})', 'numeric_double'),  # "1.1 TITLE" in middle
+                ]:
+                    pattern, pattern_type = pattern_info
+                    match = re.search(pattern, text)
+                    if match:
+                        if pattern_type == 'numeric_single':
+                            num = match.group(1)
+                            level = 1
+                        else:
+                            num = f"{match.group(1)}.{match.group(2)}"
+                            level = 2
+                        # Only use if it's at the start of a sentence or after significant whitespace
+                        if match.start() == 0 or (match.start() > 0 and text[match.start()-1] in [' ', '\n', '\t']):
+                            numbering = (num, level)
+                            # Extract the text from this numbering onwards
+                            text = text[match.start():]
+                            break
+            
+            # Debug: log blocks that might contain numbering or first 30 blocks
+            if numbering or idx < 30:
                 print(f"Debug block {idx}: '{text[:80]}' -> numbering: {numbering}")
             
             if numbering:
+                # Check if this block contains multiple clauses (e.g., "1. TITLE 2. TITLE")
+                # This can happen when pdfplumber merges multiple lines
+                multiple_clauses = []
+                remaining_text = text
+                
+                # Find all clause numberings in this block
+                all_numberings = []
+                for pattern_info in [
+                    (r'\b(\d+)\.\s+([A-Z][^\.]{5,}?)(?=\s+\d+\.|\s*$)', 'numeric_single'),  # "1. TITLE" followed by "2." or end
+                    (r'\b(\d+)\.(\d+)\s+([A-Z][^\.]{5,}?)(?=\s+\d+\.|\s*$)', 'numeric_double'),  # "1.1 TITLE"
+                ]:
+                    pattern, pattern_type = pattern_info
+                    for match in re.finditer(pattern, remaining_text):
+                        if pattern_type == 'numeric_single':
+                            num = match.group(1)
+                            level = 1
+                            title_text = match.group(2).strip()
+                        else:
+                            num = f"{match.group(1)}.{match.group(2)}"
+                            level = 2
+                            title_text = match.group(3).strip()
+                        all_numberings.append((match.start(), num, level, title_text))
+                
+                # If we found multiple clauses in this block, process them separately
+                if len(all_numberings) > 1:
+                    # Save current clause if exists
+                    if current_clause:
+                        clauses.append(current_clause)
+                        current_clause = None
+                    
+                    # Process each clause found in this block
+                    for i, (pos, num, lev, title_text) in enumerate(all_numberings):
+                        found_first_clause = True
+                        # Extract content for this clause (from this numbering to next or end of block)
+                        next_pos = all_numberings[i+1][0] if i+1 < len(all_numberings) else len(text)
+                        clause_content = text[pos:next_pos].strip()
+                        
+                        clause_title = title_text[:150] if lev == 1 else ""
+                        
+                        if current_clause:
+                            clauses.append(current_clause)
+                        
+                        current_clause = {
+                            'number': num,
+                            'level': lev,
+                            'title': clause_title,
+                            'content': clause_content,
+                            'blocks': [block],
+                            'page': block['page'],
+                            'bbox': block['bbox']
+                        }
+                        print(f"  -> Extracted clause {num} (level {lev}) from multi-clause block")
+                    
+                    pending_numbering = None
+                    continue
+                
                 # Save previous clause if exists
                 if current_clause:
                     clauses.append(current_clause)
@@ -888,6 +1112,7 @@ class LegalDocumentProcessor:
                 
                 # Start new clause
                 number, level = numbering
+                found_first_clause = True  # Mark that we've found a real clause
                 
                 # Extract title (text after numbering) - improved extraction
                 # Try multiple patterns to extract the full title
@@ -1050,12 +1275,14 @@ class LegalDocumentProcessor:
                     # Determine if this is a new clause or continuation
                     # New clause if:
                     # 1. It's a different main clause (level 1, different number)
-                    # 2. It's a sub-clause of current (level > current level)
+                    # 2. It's a sub-clause of current (level > current level) AND the number starts with current number
                     # 3. It's a sibling clause at same level but different number
+                    # 4. It's a parent clause (level < current level)
                     is_new_clause = (
                         (new_level == 1 and new_number != current_clause['number']) or  # Different main clause
-                        (new_level > current_clause['level']) or  # Sub-clause of current
-                        (new_level == current_clause['level'] and new_number != current_clause['number'])  # Sibling clause
+                        (new_level < current_clause['level']) or  # Parent clause (e.g., 2 after 2.1)
+                        (new_level == current_clause['level'] and new_number != current_clause['number']) or  # Sibling clause
+                        (new_level > current_clause['level'] and new_number.startswith(current_clause['number'] + '.'))  # Sub-clause of current
                     )
                     
                     if is_new_clause:
@@ -1165,18 +1392,14 @@ class LegalDocumentProcessor:
                         current_clause['content'] += ' ' + text
                         current_clause['blocks'].append(block)
             else:
-                # No current clause and no numbering - check if it's a section header
-                # (all caps, relatively short, might be a section title)
-                if text.isupper() and 10 < len(text) < 100:
-                    current_clause = {
-                        'number': f"section_{len(clauses) + 1}",
-                        'level': 1,
-                        'title': text,
-                        'content': text,
-                        'blocks': [block],
-                        'page': block['page'],
-                        'bbox': block['bbox']
-                    }
+                # No current clause and no numbering - skip document headers/metadata
+                # Only create section clauses if:
+                # 1. We're past the first 10 blocks (skip document header area)
+                # 2. It's clearly a section header (all caps, reasonable length)
+                # 3. We haven't found any numbered clauses yet (to avoid false positives)
+                # Actually, let's skip section creation entirely - only extract numbered clauses
+                # This prevents document headers from being extracted as clauses
+                pass
         
         # Add last clause
         if current_clause:
@@ -1214,20 +1437,41 @@ class LegalDocumentProcessor:
                 title = re.sub(r'\s+', ' ', title)
                 clause['title'] = title.strip()[:150]
         
-        # Classify clauses using ML models (Legal-BERT) or keyword-based classifier
-        for clause in clauses:
-            if self.legal_bert and self.legal_tokenizer:
-                # Use Legal-BERT for more accurate classification
-                clause_type, confidence = self._classify_with_legal_bert(clause['content'])
-                clause['type'] = clause_type
-                clause['confidence'] = confidence
-                clause['all_categories'] = [clause_type]  # Legal-BERT returns primary category
+        # Validate clauses using CONTRACTS-BERT (classification removed)
+        for idx, clause in enumerate(clauses):
+            # Validation: Check clause completeness, hierarchy, and boundaries
+            if self.contracts_bert and self.contracts_tokenizer:
+                # Find parent clause for hierarchy validation
+                parent_clause = None
+                if clause['level'] > 1:
+                    # Find the parent clause
+                    for prev_clause in clauses[:idx]:
+                        if (prev_clause['level'] < clause['level'] and
+                            clause['number'].startswith(prev_clause['number'] + '.')):
+                            parent_clause = prev_clause
+                            break
+                
+                # Perform validation
+                validation_result = self._validate_clause_with_contracts_bert(
+                    clause, 
+                    parent_clause=parent_clause,
+                    all_clauses=clauses
+                )
+                clause['validation'] = validation_result
+                
+                # Log validation issues
+                if validation_result['issues']:
+                    print(f"  ⚠ Validation issues for clause {clause['number']}: {validation_result['issues']}")
+                if validation_result['warnings']:
+                    print(f"  ⚠ Validation warnings for clause {clause['number']}: {validation_result['warnings']}")
             else:
-                # Fallback to keyword-based classification
-                categories = self.clause_classifier.classify_clause(clause['content'])
-                clause['type'] = self.clause_classifier.get_primary_category(clause['content'])
-                clause['all_categories'] = categories
-                clause['confidence'] = 0.75  # Lower confidence for keyword-based
+                # No validation if CONTRACTS-BERT not available
+                clause['validation'] = {
+                    'is_valid': True,
+                    'confidence': 0.75,
+                    'issues': [],
+                    'warnings': []
+                }
         
         print(f"Extracted {len(clauses)} clauses from {len(doc_structure['all_blocks'])} blocks")
         
@@ -1283,9 +1527,7 @@ class LegalDocumentProcessor:
                     'content': para['text'],
                     'blocks': para['blocks'],
                     'page': para['page'],
-                    'bbox': para['blocks'][0]['bbox'] if para['blocks'] else {},
-                    'type': self.clause_classifier.get_primary_category(para['text']),
-                    'confidence': 0.75
+                    'bbox': para['blocks'][0]['bbox'] if para['blocks'] else {}
                 })
             
             print(f"Created {len(clauses)} clause-like structures from paragraphs")
@@ -1336,8 +1578,6 @@ class LegalDocumentProcessor:
                 'number': clause['number'],
                 'title': clause['title'],
                 'content': clause['content'],
-                'type': clause['type'],
-                'confidence': clause['confidence'],
                 'level': level,
                 'children': []
             }
@@ -1361,16 +1601,6 @@ class LegalDocumentProcessor:
             'total_blocks': len(doc_structure['all_blocks']),
             'processing_date': None  # Will be set by API
         }
-    
-    def _calculate_confidence(self, clauses: List[Dict]) -> float:
-        """
-        Calculate overall confidence score
-        """
-        if not clauses:
-            return 0.0
-        
-        confidences = [c.get('confidence', 0.5) for c in clauses]
-        return sum(confidences) / len(confidences)
     
     async def process_contract(self, pdf_path: str) -> Dict:
         """
@@ -1421,7 +1651,6 @@ class LegalDocumentProcessor:
         return {
             "clauses": structured_clauses,
             "metadata": metadata,
-            "total_pages": total_pages,
-            "confidence_score": self._calculate_confidence(clauses)
+            "total_pages": total_pages
         }
 

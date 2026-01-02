@@ -4,8 +4,6 @@ interface Clause {
   number: string;
   title: string;
   content: string;
-  type: string;
-  confidence: number;
   level?: number;
   children?: Clause[];
 }
@@ -45,23 +43,6 @@ const ClauseCard: React.FC<{ clause: Clause }> = ({ clause }) => {
     </svg>
   );
 
-  const getTypeColor = (type: string) => {
-    const colors: { [key: string]: string } = {
-      parties: 'bg-blue-100 text-blue-800',
-      effective_date: 'bg-green-100 text-green-800',
-      expiration_date: 'bg-red-100 text-red-800',
-      governing_law: 'bg-purple-100 text-purple-800',
-      confidentiality: 'bg-yellow-100 text-yellow-800',
-      indemnity: 'bg-orange-100 text-orange-800',
-      liability_cap: 'bg-pink-100 text-pink-800',
-      termination: 'bg-red-100 text-red-800',
-      ip_ownership: 'bg-indigo-100 text-indigo-800',
-      definitions: 'bg-gray-100 text-gray-800',
-      general: 'bg-gray-100 text-gray-800',
-    };
-    return colors[type] || colors.general;
-  };
-
   return (
     <div className="border border-gray-200 rounded-lg bg-white shadow-sm hover:shadow-md transition-shadow">
       <div
@@ -70,19 +51,16 @@ const ClauseCard: React.FC<{ clause: Clause }> = ({ clause }) => {
       >
         <div className="flex items-center gap-3 flex-wrap">
           <span className="font-mono text-blue-600 font-semibold text-sm">
-            {clause.number}
+            {clause.number || 'N/A'}
           </span>
-          <span className="font-semibold text-gray-900">{clause.title}</span>
-          <span
-            className={`text-xs px-2 py-1 rounded-full font-medium ${getTypeColor(
-              clause.type
-            )}`}
-          >
-            {clause.type.replace(/_/g, ' ')}
-          </span>
-          <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-            {(clause.confidence * 100).toFixed(1)}% confidence
-          </span>
+          {clause.title && clause.title.trim() && (
+            <span className="font-semibold text-gray-900">{clause.title}</span>
+          )}
+          {clause.level && (
+            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+              Level {clause.level}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {clause.children && clause.children.length > 0 && (
@@ -98,7 +76,7 @@ const ClauseCard: React.FC<{ clause: Clause }> = ({ clause }) => {
         <div className="px-4 pb-4 pt-2 border-t border-gray-100">
           <div className="mt-3">
             <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">
-              {clause.content}
+              {clause.content || 'No content available'}
             </p>
           </div>
 
