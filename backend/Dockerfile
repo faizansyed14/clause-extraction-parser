@@ -18,8 +18,10 @@ WORKDIR /app
 # Copy requirements
 COPY requirements.txt .
 # Fix setuptools version to avoid jinja2 build issues
+# Install CPU-only PyTorch to save space (no GPU support needed)
 RUN pip install --no-cache-dir "setuptools<70.0.0" && \
     pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt && \
     pip cache purge && \
     rm -rf /root/.cache/pip

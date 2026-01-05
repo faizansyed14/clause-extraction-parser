@@ -1,6 +1,6 @@
 # Core Processing
 transformers>=4.35.0
-torch>=2.1.0
+# torch>=2.1.0  # Installed separately as CPU-only version in Dockerfile
 pillow>=10.0.0
 
 # Document Processing
